@@ -15,6 +15,18 @@ python main.py
 python main.py --resume --lr=0.01
 ```
 
+## Learned Sparse Training
+Requires torchsparsemodules install as:
+```
+pip install git+https://github.com/masadcv/PyTorchSparseModules
+
+```
+
+Then run training as:
+```
+python main.py --sparse
+```
+
 ## Accuracy
 | Model             | Acc.        |
 | ----------------- | ----------- |

@@ -14,11 +14,20 @@ import argparse
 from models import *
 from utils import progress_bar
 
+from torchsparsemodules import MaskedSparseConv2d, MaskedSparseLinear, replace_layers
+
+def l1_regularization(model, lam=0.01, param_name='mask'):
+    reg_loss = 0
+    for name, param in model.named_parameters():
+        if param_name in name:
+            reg_loss += torch.norm(param, 1)
+    return lam * reg_loss
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
 parser.add_argument('--resume', '-r', action='store_true',
                     help='resume from checkpoint')
+parser.add_argument('--sparse', '-s', action='store_true',)
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -54,7 +63,7 @@ classes = ('plane', 'car', 'bird', 'cat', 'deer',
 
 # Model
 print('==> Building model..')
-# net = VGG('VGG19')
+net = VGG('VGG19')
 # net = ResNet18()
 # net = PreActResNet18()
 # net = GoogLeNet()
@@ -68,7 +77,7 @@ print('==> Building model..')
 # net = ShuffleNetV2(1)
 # net = EfficientNetB0()
 # net = RegNetX_200MF()
-net = SimpleDLA()
+# net = SimpleDLA()
 net = net.to(device)
 if device == 'cuda':
     net = torch.nn.DataParallel(net)
@@ -83,6 +92,13 @@ if args.resume:
     best_acc = checkpoint['acc']
     start_epoch = checkpoint['epoch']
 
+if args.sparse:
+    # convert model to sparse model
+    print('==> Convert model to sparse model..')
+    replace_layers(net, {nn.Conv2d: MaskedSparseConv2d, nn.Linear: MaskedSparseLinear})
+    print(net)
+
+
 criterion = nn.CrossEntropyLoss()
 optimizer = optim.SGD(net.parameters(), lr=args.lr,
                       momentum=0.9, weight_decay=5e-4)
@@ -94,6 +110,7 @@ def train(epoch):
     print('\nEpoch: %d' % epoch)
     net.train()
     train_loss = 0
+    reg_loss = 0
     correct = 0
     total = 0
     for batch_idx, (inputs, targets) in enumerate(trainloader):
@@ -101,6 +118,10 @@ def train(epoch):
         optimizer.zero_grad()
         outputs = net(inputs)
         loss = criterion(outputs, targets)
+        if args.sparse:
+            r_loss = l1_regularization(net, lam=0.01, param_name='mask')
+            reg_loss += r_loss.item()
+            loss += r_loss
         loss.backward()
         optimizer.step()
 
@@ -108,9 +129,11 @@ def train(epoch):
         _, predicted = outputs.max(1)
         total += targets.size(0)
         correct += predicted.eq(targets).sum().item()
-
-        progress_bar(batch_idx, len(trainloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                     % (train_loss/(batch_idx+1), 100.*correct/total, correct, total))
+        loss_str = 'Loss: %.3f'% (train_loss/(batch_idx+1))
+        if args.sparse:
+            loss_str += ' | Sparse Loss: %.3f'% (reg_loss/(batch_idx+1))
+        print_str = loss_str + ' | Acc: %.3f%% (%d/%d)'% (100.*correct/total, correct, total)
+        progress_bar(batch_idx, len(trainloader), print_str)
 
 
 def test(epoch):
@@ -119,19 +142,25 @@ def test(epoch):
     test_loss = 0
     correct = 0
     total = 0
+    reg_loss = 0
     with torch.no_grad():
         for batch_idx, (inputs, targets) in enumerate(testloader):
             inputs, targets = inputs.to(device), targets.to(device)
             outputs = net(inputs)
             loss = criterion(outputs, targets)
-
+            if args.sparse:
+                r_loss = l1_regularization(net, lam=0.01, param_name='mask')
+                reg_loss += r_loss.item()
+                loss += r_loss
             test_loss += loss.item()
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
-
-            progress_bar(batch_idx, len(testloader), 'Loss: %.3f | Acc: %.3f%% (%d/%d)'
-                         % (test_loss/(batch_idx+1), 100.*correct/total, correct, total))
+            loss_str = 'Loss: %.3f'% (test_loss/(batch_idx+1))
+            if args.sparse:
+                loss_str += ' | Sparse Loss: %.3f'% (reg_loss/(batch_idx+1))
+            print_str = loss_str + ' | Acc: %.3f%% (%d/%d)'% (100.*correct/total, correct, total)
+            progress_bar(batch_idx, len(testloader), print_str)
 
     # Save checkpoint.
     acc = 100.*correct/total
